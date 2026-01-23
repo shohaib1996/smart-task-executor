@@ -1,0 +1,370 @@
+# Meeting Coordinator Agent - Complete User Story
+
+Let me walk you through exactly how this works from the user's perspective, step by step.
+
+---
+
+## 🎬 **Scene 1: Initial Request**
+
+**User opens the app** → sees a clean chat interface
+
+```
+User types: "I need to schedule a 30-minute meeting with Sarah Chen 
+to discuss the Q1 marketing budget. Find a time next week."
+```
+
+**What the user sees:**
+
+```
+Agent: 🤔 Let me help you schedule that meeting. I'll need to:
+
+1. Check your calendar for availability next week
+2. Check Sarah Chen's calendar (if accessible)
+3. Find suitable 30-minute slots
+4. Propose times for your approval
+
+Starting now...
+```
+
+---
+
+## 🎬 **Scene 2: Agent Investigates (Auto-approved reads)**
+
+The agent works in real-time, showing progress:
+
+```
+Agent: ✓ Checking your Google Calendar...
+       Found 3 meetings next week
+
+Agent: ✓ Searching for Sarah Chen's calendar...
+       Found: sarah.chen@company.com (shared calendar access)
+
+Agent: ✓ Analyzing availability...
+       Comparing both schedules...
+```
+
+**Behind the scenes** (user doesn't approve these):
+- API call to Google Calendar for user's events
+- Search for Sarah's calendar
+- API call to fetch Sarah's availability
+- AI analyzes time zones, business hours, existing meetings
+
+---
+
+## 🎬 **Scene 3: First Approval Gate**
+
+**Agent pauses and shows an approval card:**
+
+```
+═══════════════════════════════════════════
+📅 APPROVAL REQUIRED - Calendar Invite
+
+I found 3 available time slots:
+
+Option 1: Tuesday, Jan 28 at 2:00 PM EST (1 hour)
+  ✓ Both calendars free
+  ✓ During work hours
+  
+Option 2: Wednesday, Jan 29 at 10:00 AM EST (1 hour)
+  ✓ Both calendars free
+  ✓ Morning slot
+  
+Option 3: Thursday, Jan 30 at 3:30 PM EST (1 hour)
+  ✓ Both calendars free
+  ✓ Afternoon slot
+
+Which time would you prefer?
+═══════════════════════════════════════════
+
+[Option 1] [Option 2] [Option 3] [Let me pick a different time]
+```
+
+**User clicks:** `Option 2` (Wednesday 10 AM)
+
+---
+
+## 🎬 **Scene 4: Agent Prepares Actions**
+
+```
+Agent: ✓ You selected Wednesday, Jan 29 at 10:00 AM EST
+
+Now I'll prepare the meeting details. One moment...
+```
+
+**Agent generates:**
+- Meeting title
+- Description/agenda
+- Duration
+- Attendees
+- Location (defaults to Google Meet/Zoom)
+
+---
+
+## 🎬 **Scene 5: Second Approval Gate (The Big One)**
+
+**Agent shows detailed approval card:**
+
+```
+═══════════════════════════════════════════
+⚠️  APPROVAL REQUIRED - Multiple Actions
+
+I'm ready to execute the following:
+
+┌─────────────────────────────────────────┐
+│ ACTION 1: Create Calendar Event         │
+├─────────────────────────────────────────┤
+│ Title: Q1 Marketing Budget Discussion   │
+│ When: Wed, Jan 29, 2025, 10:00-10:30 AM│
+│ Attendees:                              │
+│   • you@company.com                     │
+│   • sarah.chen@company.com              │
+│ Location: Google Meet (auto-generated)  │
+│ Description:                            │
+│   Meeting to discuss Q1 marketing       │
+│   budget allocation and priorities.     │
+│                                         │
+│ API: Google Calendar API                │
+│ Cost: Free                              │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│ ACTION 2: Send Email Notification       │
+├─────────────────────────────────────────┤
+│ To: sarah.chen@company.com              │
+│ Subject: Meeting Scheduled - Q1         │
+│          Marketing Budget               │
+│ Body:                                   │
+│   Hi Sarah,                             │
+│                                         │
+│   I've scheduled our meeting to discuss │
+│   the Q1 marketing budget for:          │
+│                                         │
+│   Wednesday, January 29, 2025           │
+│   10:00 AM - 10:30 AM EST               │
+│   Google Meet: [link]                   │
+│                                         │
+│   Looking forward to our discussion.    │
+│                                         │
+│   Best,                                 │
+│   [Your name]                           │
+│                                         │
+│ API: SendGrid                           │
+│ Cost: $0.001                            │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│ ACTION 3: Create Meeting Notes Page     │
+├─────────────────────────────────────────┤
+│ Location: Notion > Meetings folder      │
+│ Title: Q1 Marketing Budget - Jan 29     │
+│ Template: Standard meeting notes        │
+│ Pre-filled:                             │
+│   • Attendees                           │
+│   • Date/Time                           │
+│   • Agenda items placeholder            │
+│                                         │
+│ API: Notion API                         │
+│ Cost: Free                              │
+└─────────────────────────────────────────┘
+
+Total API Calls: 3
+Total Cost: ~$0.001
+Estimated Time: 5-10 seconds
+
+═══════════════════════════════════════════
+
+[✓ Approve All] [Edit] [Approve Some] [Cancel]
+```
+
+---
+
+## 🎬 **Scene 6: User Makes Edits (Optional Flow)**
+
+**User clicks:** `Edit`
+
+```
+Agent: What would you like to change?
+
+User: "Actually, make it 45 minutes instead of 30, and 
+       don't send the email - I'll tell Sarah in person."
+
+Agent: ✓ Updated meeting duration to 45 minutes
+       ✓ Removed email notification action
+       
+Updated plan ready for approval...
+```
+
+**Shows new approval card** with updated details and only 2 actions now.
+
+---
+
+## 🎬 **Scene 7: Execution**
+
+**User clicks:** `✓ Approve All`
+
+```
+Agent: ⚡ Executing approved actions...
+
+       ⏳ ACTION 1: Creating calendar event...
+       ✓ Calendar event created successfully
+          Event ID: evt_abc123xyz
+          
+       ⏳ ACTION 3: Creating Notion page...
+          ✓ Notion page created successfully
+          Page URL: https://notion.so/Q1-Marketing-Budget-xyz
+          
+═══════════════════════════════════════════
+✅ ALL ACTIONS COMPLETED SUCCESSFULLY
+
+Meeting scheduled:
+📅 Wednesday, Jan 29, 10:00-10:45 AM EST
+👥 You + Sarah Chen
+📍 Google Meet
+📝 Notes: https://notion.so/Q1-Marketing-Budget-xyz
+
+═══════════════════════════════════════════
+
+View audit log | Schedule another meeting
+```
+
+---
+
+## 🎬 **Scene 8: User Checks Audit Log**
+
+**User clicks:** `View audit log`
+
+```
+═══════════════════════════════════════════
+AUDIT LOG - Workflow #1247
+
+Initiated: Jan 23, 2025, 2:34 PM
+Completed: Jan 23, 2025, 2:35 PM
+Status: ✓ Success
+
+Timeline:
+├─ 2:34:12 PM - User request received
+├─ 2:34:15 PM - Calendar read (you@company.com)
+├─ 2:34:16 PM - Calendar read (sarah.chen@company.com)
+├─ 2:34:18 PM - Generated 3 time slot options
+├─ 2:34:45 PM - User selected Option 2
+├─ 2:34:47 PM - Generated meeting details
+├─ 2:34:52 PM - User requested edit (duration change)
+├─ 2:34:55 PM - User approved 2 actions
+├─ 2:35:01 PM - ✓ Calendar event created
+├─ 2:35:03 PM - ✓ Notion page created
+└─ 2:35:03 PM - Workflow completed
+
+Actions Taken:
+✓ Google Calendar: Create event (evt_abc123xyz)
+✓ Notion: Create page (page_id_789)
+
+Actions Canceled:
+✗ SendGrid: Send email (user removed)
+
+Tokens Used: 1,247
+API Calls: 4
+Cost: $0.002
+═══════════════════════════════════════════
+
+[Download full log] [Export as PDF]
+```
+
+---
+
+## 🎬 **Alternative Flow 1: Agent Needs More Info**
+
+```
+User: "Schedule a meeting with John about the project"
+
+Agent: I need a bit more information:
+
+❓ Which John? I found:
+   1. John Smith (john.smith@company.com) - Engineering
+   2. John Doe (john.d@company.com) - Marketing
+   
+❓ Which project?
+   • Project Alpha (current sprint)
+   • Website Redesign
+   • Q1 Planning
+   
+❓ When should this meeting happen?
+   • This week
+   • Next week
+   • Specific date: [calendar picker]
+
+Please provide these details so I can find the best time.
+```
+
+---
+
+## 🎬 **Alternative Flow 2: Calendar Conflict**
+
+```
+Agent: ⚠️ Challenge detected
+
+I found availability issues:
+
+Your schedule: 
+✓ Available Tuesday-Thursday next week
+
+Sarah's schedule:
+✗ Fully booked Tuesday-Wednesday
+✓ Available Thursday afternoon
+
+Recommendation:
+📅 Thursday, Jan 30 at 2:00 PM EST (only mutual slot)
+
+Would you like to:
+[Accept Thursday 2 PM] [Expand to week after] [Manual override]
+```
+
+---
+
+## 🎬 **Alternative Flow 3: Error Handling**
+
+```
+Agent: ⏳ ACTION 1: Creating calendar event...
+       ✗ FAILED - Google Calendar API returned error
+       
+Error: Rate limit exceeded (429)
+
+I've automatically:
+✓ Paused execution
+✓ Saved your progress
+✓ Scheduled retry in 60 seconds
+
+You can:
+[Wait for auto-retry] [Retry now] [Cancel workflow] [Continue without calendar]
+
+No actions have been taken yet - your approval is still safe.
+```
+
+---
+
+## 🎯 **Key User Experience Principles**
+
+1. **Transparency**: User sees EXACTLY what will happen before it happens
+2. **Control**: User can edit, approve partially, or cancel at any point
+3. **Safety**: Destructive actions always require approval
+4. **Progress**: Real-time updates, never a black box
+5. **Audit**: Complete history of what happened and why
+6. **Intelligence**: Agent handles complexity, user handles decisions
+7. **Recovery**: Clear error messages with options to fix
+
+---
+
+## 💡 **Why This UX Works**
+
+- **Trust building**: Show your work, get approval, execute
+- **No surprises**: Preview before action
+- **Feels magical**: Agent does the tedious work
+- **Feels safe**: User always in control
+- **Professional**: Audit trail for accountability
+
+Would you like me to:
+1. **Design the UI mockups** for these screens?
+2. **Write the technical flow** showing the LangGraph state machine?
+3. **Detail the database schema** for storing this workflow?
+4. **Show error handling scenarios** in more depth?
+
+This user story should give you a crystal-clear vision for building the project!

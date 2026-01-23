@@ -1,0 +1,63 @@
+Backend scaffolding is complete. Here's the final project structure:
+
+Project Structure
+
+smart-task-backend/
+├── app/
+│   ├── __init__.py
+│   ├── main.py                    # FastAPI app entry point
+│   ├── api/
+│   │   ├── routes/
+│   │   │   ├── auth.py            # Google OAuth endpoints
+│   │   │   ├── workflows.py       # Workflow CRUD & approval
+│   │   │   └── sse.py             # Server-Sent Events
+│   │   └── websockets/
+│   │       ├── connection_manager.py
+│   │       └── handlers.py        # WebSocket endpoints
+│   ├── agents/
+│   │   └── meeting_coordinator.py # LangGraph agent
+│   ├── core/
+│   │   ├── config.py              # Settings from .env
+│   │   ├── database.py            # Async PostgreSQL
+│   │   └── security.py            # JWT & password utils
+│   ├── models/
+│   │   ├── user.py
+│   │   └── workflow.py            # Workflow, Action, AuditLog
+│   ├── schemas/                   # Pydantic models
+│   ├── services/
+│   │   ├── calendar.py            # Google Calendar API
+│   │   ├── email.py               # SendGrid
+│   │   └── notion.py              # Notion API
+│   └── tasks/
+│       ├── celery_app.py          # Celery config
+│       └── workflow_tasks.py      # Background tasks
+├── alembic/                       # Database migrations
+├── requirements.txt
+├── .env.example
+├── docker-compose.yml             # Redis + Celery workers
+├── Dockerfile
+└── .gitignore
+Next Steps to Run
+Create virtual environment and install dependencies:
+
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+Copy and configure environment:
+
+copy .env.example .env
+# Edit .env with your Neon DB URL, Google OAuth credentials, OpenAI key
+Start Redis (via Docker):
+
+docker-compose up redis -d
+Run migrations:
+
+alembic revision --autogenerate -m "Initial tables"
+alembic upgrade head
+Start the server:
+
+uvicorn app.main:app --reload
+Start Celery worker (in another terminal):
+
+celery -A app.tasks.celery_app worker --loglevel=info -Q workflows
+The API will be at http://localhost:8000 with Swagger docs at /docs.
