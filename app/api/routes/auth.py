@@ -2,8 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
-from google.oauth2 import id_token
-from google.auth.transport import requests
 from google_auth_oauthlib.flow import Flow
 import httpx
 
@@ -11,7 +9,7 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import create_access_token, get_current_user
 from app.models.user import User
-from app.schemas.auth import Token, GoogleAuthURL, UserResponse
+from app.schemas.auth import GoogleAuthURL, UserResponse
 
 router = APIRouter()
 settings = get_settings()

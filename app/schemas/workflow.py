@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Any
+from typing import Optional, List
 from datetime import datetime
 from app.models.workflow import WorkflowStatus, ActionStatus, ActionType
 
@@ -56,6 +56,7 @@ class AuditLogResponse(BaseModel):
 
 
 class WorkflowResponse(BaseModel):
+    """Basic workflow response without nested relations"""
     id: str
     user_request: str
     status: WorkflowStatus
@@ -64,13 +65,14 @@ class WorkflowResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
-    actions: List[ActionResponse] = []
 
     class Config:
         from_attributes = True
 
 
 class WorkflowDetailResponse(WorkflowResponse):
+    """Detailed workflow response with actions and audit logs"""
+    actions: List[ActionResponse] = []
     audit_logs: List[AuditLogResponse] = []
 
 

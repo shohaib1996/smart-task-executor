@@ -11,12 +11,20 @@ from app.models.workflow import Workflow, Action, AuditLog, WorkflowStatus, Acti
 
 def run_async(coro):
     """Helper to run async code in Celery tasks"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     try:
         return loop.run_until_complete(coro)
     finally:
-        loop.close()
+        # Don't close the loop - reuse it for subsequent tasks
+        pass
 
 
 @celery_app.task(bind=True, max_retries=3)

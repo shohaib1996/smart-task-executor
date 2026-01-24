@@ -139,13 +139,13 @@ async def get_workflow(
         ],
         "audit_logs": [
             AuditLogResponse(
-                id=l.id,
-                event_type=l.event_type,
-                message=l.message,
-                details=json.loads(l.details) if l.details else None,
-                timestamp=l.timestamp,
+                id=log.id,
+                event_type=log.event_type,
+                message=log.message,
+                details=json.loads(log.details) if log.details else None,
+                timestamp=log.timestamp,
             )
-            for l in audit_logs
+            for log in audit_logs
         ],
     }
 

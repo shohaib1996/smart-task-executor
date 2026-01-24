@@ -61,3 +61,5 @@ celerybeat.pid
 # Misc
 .DS_Store
 Thumbs.db
+
+# flow.txt

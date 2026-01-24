@@ -1,0 +1,408 @@
+# Smart Task Executor - API Testing Flow
+# ==========================================
+
+## Prerequisites
+- FastAPI server running: uvicorn app.main:app --reload
+- Redis running: docker run -d -p 6379:6379 redis:7-alpine
+- Celery worker running: celery -A app.tasks.celery_app worker --loglevel=info -Q workflows --pool=solo
+
+## API Base URL: http://localhost:8000
+## API Docs: http://localhost:8000/docs
+
+================================================================================
+## 1. HEALTH CHECK
+================================================================================
+
+GET http://localhost:8000/health
+
+Expected Response:
+{
+    "status": "healthy"
+}
+
+GET http://localhost:8000/
+
+Expected Response:
+{
+    "message": "Smart Task Executor API",
+    "version": "1.0.0"
+}
+
+================================================================================
+## 2. AUTHENTICATION FLOW (Google OAuth)
+================================================================================
+
+### Step 1: Get Google Auth URL
+GET http://localhost:8000/api/auth/google
+
+Expected Response:
+{
+    "auth_url": "https://accounts.google.com/o/oauth2/auth?..."
+}
+
+### Step 2: Open the auth_url in browser
+- Copy the auth_url from response
+- Paste in browser
+- Login with Google
+- Grant permissions
+- You'll be redirected to: http://localhost:3000/auth/callback?token=<JWT_TOKEN>
+- Copy the JWT token from the URL
+
+### Step 3: Test authenticated endpoint
+GET http://localhost:8000/api/auth/me
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Expected Response:
+{
+    "id": "uuid-here",
+    "email": "your@email.com",
+    "name": "Your Name",
+    "picture": "https://..."
+}
+
+================================================================================
+## 3. WORKFLOW ENDPOINTS (Requires Authentication)
+================================================================================
+
+Note: All workflow endpoints require the Authorization header:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+### 3.1 Create a New Workflow
+POST http://localhost:8000/api/workflows/
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+    Content-Type: application/json
+Body:
+{
+    "user_request": "Schedule a 30-minute meeting with john@example.com to discuss the project next week"
+}
+
+Expected Response:
+{
+    "id": "workflow-uuid",
+    "user_request": "Schedule a 30-minute meeting...",
+    "status": "pending",
+    "created_at": "2024-01-24T...",
+    "updated_at": "2024-01-24T...",
+    "actions": []
+}
+
+### 3.2 List All Workflows
+GET http://localhost:8000/api/workflows/
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Optional Query Params:
+    ?skip=0&limit=20
+
+Expected Response:
+[
+    {
+        "id": "workflow-uuid",
+        "user_request": "...",
+        "status": "pending|investigating|awaiting_approval|executing|completed|failed",
+        ...
+    }
+]
+
+### 3.3 Get Workflow Details (with actions and audit logs)
+GET http://localhost:8000/api/workflows/{workflow_id}
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Expected Response:
+{
+    "id": "workflow-uuid",
+    "user_request": "...",
+    "status": "awaiting_approval",
+    "actions": [
+        {
+            "id": "action-uuid",
+            "action_type": "calendar_create",
+            "title": "Create Calendar Event",
+            "description": "...",
+            "payload": {...},
+            "status": "pending",
+            "requires_approval": true,
+            "api_name": "Google Calendar",
+            "estimated_cost": 0.0
+        }
+    ],
+    "audit_logs": [
+        {
+            "id": "log-uuid",
+            "event_type": "user_request",
+            "message": "Workflow initiated...",
+            "timestamp": "..."
+        }
+    ]
+}
+
+### 3.4 Approve/Reject Actions
+POST http://localhost:8000/api/workflows/{workflow_id}/approve
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+    Content-Type: application/json
+Body:
+{
+    "workflow_id": "workflow-uuid",
+    "actions": [
+        {"action_id": "action-uuid-1", "approved": true},
+        {"action_id": "action-uuid-2", "approved": false}
+    ]
+}
+
+Expected Response:
+{
+    "message": "Actions processed",
+    "approved": 1,
+    "rejected": 1
+}
+
+### 3.5 Edit an Action (before approval)
+PUT http://localhost:8000/api/workflows/{workflow_id}/actions/{action_id}
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+    Content-Type: application/json
+Body:
+{
+    "action_id": "action-uuid",
+    "payload": {
+        "summary": "Updated Meeting Title",
+        "start": "2024-01-28T10:00:00",
+        "end": "2024-01-28T10:45:00",
+        "attendees": ["john@example.com"],
+        "description": "Updated description"
+    }
+}
+
+Expected Response:
+{
+    "message": "Action updated"
+}
+
+### 3.6 Remove an Action (mark as skipped)
+DELETE http://localhost:8000/api/workflows/{workflow_id}/actions/{action_id}
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Expected Response:
+{
+    "message": "Action removed"
+}
+
+### 3.7 Cancel a Workflow
+POST http://localhost:8000/api/workflows/{workflow_id}/cancel
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Expected Response:
+{
+    "message": "Workflow cancelled"
+}
+
+================================================================================
+## 4. REAL-TIME UPDATES
+================================================================================
+
+### 4.1 Server-Sent Events (SSE) - Workflow Progress
+GET http://localhost:8000/api/sse/workflows/{workflow_id}/stream
+Headers:
+    Authorization: Bearer <YOUR_JWT_TOKEN>
+
+This is a streaming endpoint. You'll receive events like:
+    event: status
+    data: {"workflow_id": "...", "status": "investigating", "updated_at": "..."}
+
+    event: complete
+    data: {"workflow_id": "...", "status": "completed", "summary": "..."}
+
+### 4.2 WebSocket - Real-time Updates
+Connect to: ws://localhost:8000/ws/{workflow_id}?token=<YOUR_JWT_TOKEN>
+
+Or for general notifications:
+Connect to: ws://localhost:8000/ws?token=<YOUR_JWT_TOKEN>
+
+WebSocket Messages Received:
+{
+    "type": "progress",
+    "workflow_id": "...",
+    "data": {"message": "Checking your calendar..."}
+}
+
+{
+    "type": "slot_selection",
+    "workflow_id": "...",
+    "data": {
+        "slots": [...],
+        "message": "Please select a time slot"
+    }
+}
+
+{
+    "type": "approval_required",
+    "workflow_id": "...",
+    "data": {"message": "Actions ready for approval"}
+}
+
+WebSocket Messages to Send:
+{
+    "type": "ping"
+}
+
+{
+    "type": "select_option",
+    "option_id": "slot_0"
+}
+
+================================================================================
+## 5. TESTING WITH CURL
+================================================================================
+
+### Health Check
+curl http://localhost:8000/health
+
+### Get Google Auth URL
+curl http://localhost:8000/api/auth/google
+
+### Get Current User (replace TOKEN)
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" http://localhost:8000/api/auth/me
+
+### Create Workflow (replace TOKEN)
+curl -X POST http://localhost:8000/api/workflows/ \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"user_request": "Schedule a meeting with john@example.com next week"}'
+
+### List Workflows (replace TOKEN)
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" http://localhost:8000/api/workflows/
+
+### Get Workflow Details (replace TOKEN and WORKFLOW_ID)
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" http://localhost:8000/api/workflows/WORKFLOW_ID
+
+================================================================================
+## 6. TESTING WITH PYTHON
+================================================================================
+
+```python
+import requests
+
+BASE_URL = "http://localhost:8000"
+TOKEN = "your-jwt-token-here"
+
+headers = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# Health check
+r = requests.get(f"{BASE_URL}/health")
+print(r.json())
+
+# Get current user
+r = requests.get(f"{BASE_URL}/api/auth/me", headers=headers)
+print(r.json())
+
+# Create workflow
+r = requests.post(
+    f"{BASE_URL}/api/workflows/",
+    headers=headers,
+    json={"user_request": "Schedule a 30-min meeting with john@example.com next week"}
+)
+workflow = r.json()
+print(workflow)
+
+# Get workflow details
+r = requests.get(f"{BASE_URL}/api/workflows/{workflow['id']}", headers=headers)
+print(r.json())
+
+# List all workflows
+r = requests.get(f"{BASE_URL}/api/workflows/", headers=headers)
+print(r.json())
+```
+
+================================================================================
+## 7. WORKFLOW STATUS FLOW
+================================================================================
+
+1. PENDING        -> Workflow just created
+2. INVESTIGATING  -> Agent is analyzing request, checking calendars
+3. AWAITING_APPROVAL -> Agent found options, waiting for user input
+4. EXECUTING      -> User approved, actions being executed
+5. COMPLETED      -> All actions finished successfully
+6. FAILED         -> Something went wrong
+7. CANCELLED      -> User cancelled the workflow
+
+================================================================================
+## 8. ACTION STATUS FLOW
+================================================================================
+
+1. PENDING   -> Action created, awaiting user decision
+2. APPROVED  -> User approved this action
+3. REJECTED  -> User rejected this action
+4. EXECUTING -> Action is being executed
+5. COMPLETED -> Action finished successfully
+6. FAILED    -> Action failed to execute
+7. SKIPPED   -> User removed this action
+
+================================================================================
+## 9. COMMON ERRORS
+================================================================================
+
+401 Unauthorized
+{
+    "detail": "Invalid authentication credentials"
+}
+-> Check your JWT token
+
+404 Not Found
+{
+    "detail": "Workflow not found"
+}
+-> Workflow doesn't exist or belongs to another user
+
+400 Bad Request
+{
+    "detail": "Workflow is not awaiting approval"
+}
+-> Can only approve/edit actions when status is "awaiting_approval"
+
+================================================================================
+## 10. POSTMAN COLLECTION SETUP
+================================================================================
+
+1. Create a new collection: "Smart Task Executor"
+
+2. Set collection variable:
+   - BASE_URL: http://localhost:8000
+   - TOKEN: (will be set after login)
+
+3. Create requests:
+   - Health: GET {{BASE_URL}}/health
+   - Google Auth: GET {{BASE_URL}}/api/auth/google
+   - Get Me: GET {{BASE_URL}}/api/auth/me (Auth: Bearer {{TOKEN}})
+   - Create Workflow: POST {{BASE_URL}}/api/workflows/ (Auth + JSON body)
+   - List Workflows: GET {{BASE_URL}}/api/workflows/ (Auth)
+   - Get Workflow: GET {{BASE_URL}}/api/workflows/:id (Auth)
+   - Approve Actions: POST {{BASE_URL}}/api/workflows/:id/approve (Auth + JSON body)
+   - Cancel Workflow: POST {{BASE_URL}}/api/workflows/:id/cancel (Auth)
+
+================================================================================
+## 11. QUICK TEST SEQUENCE
+================================================================================
+
+1. Open http://localhost:8000/docs in browser
+2. Click "GET /api/auth/google" -> Try it out -> Execute
+3. Copy the auth_url, open in new tab
+4. Login with Google, get redirected
+5. Copy JWT token from URL (after ?token=)
+6. Back in Swagger, click "Authorize" button (top right)
+7. Enter: Bearer <your-token>
+8. Now test other endpoints:
+   - GET /api/auth/me
+   - POST /api/workflows/
+   - GET /api/workflows/
+   - etc.
+
+================================================================================

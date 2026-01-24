@@ -1,3 +1,16 @@
+# Smart Task Backend - Plans & TODOs
+================================================================================
+
+## DONE: OAuth Redirect Restored
+
+OAuth callback now redirects to `{FRONTEND_URL}/auth/callback?token={access_token}`
+
+**Remember:**
+- Set `FRONTEND_URL` in `.env` to your frontend URL (e.g., `http://localhost:3000`)
+- Create `/auth/callback` route in frontend that extracts token and stores it
+
+================================================================================
+
 # Meeting Coordinator Agent - Complete User Story
 
 Let me walk you through exactly how this works from the user's perspective, step by step.

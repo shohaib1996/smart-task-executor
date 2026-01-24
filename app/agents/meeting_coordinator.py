@@ -5,10 +5,16 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from sqlmodel import select
-
 from app.core.config import get_settings
 from app.core.database import async_session
-from app.models.workflow import Workflow, Action, AuditLog, WorkflowStatus, ActionStatus, ActionType
+from app.models.workflow import (
+    Workflow,
+    Action,
+    AuditLog,
+    WorkflowStatus,
+    ActionStatus,
+    ActionType,
+)
 from app.models.user import User
 from app.services.calendar import CalendarService
 
@@ -58,7 +64,7 @@ async def parse_request(state: AgentState) -> AgentState:
     """Parse user's meeting request to extract details"""
     prompt = f"""Analyze this meeting request and extract the following information:
 
-Request: "{state['user_request']}"
+Request: "{state["user_request"]}"
 
 Extract:
 1. Meeting title/topic
@@ -107,9 +113,7 @@ async def check_calendars(state: AgentState) -> AgentState:
     """Check user's calendar and attendee availability"""
     async with async_session() as session:
         # Get user
-        result = await session.execute(
-            select(User).where(User.id == state["user_id"])
-        )
+        result = await session.execute(select(User).where(User.id == state["user_id"]))
         user = result.scalar_one_or_none()
 
         if not user or not user.google_access_token:
@@ -120,7 +124,9 @@ async def check_calendars(state: AgentState) -> AgentState:
             }
 
         # Log progress
-        await _log_progress(state["workflow_id"], "calendar_read", "Checking your calendar...")
+        await _log_progress(
+            state["workflow_id"], "calendar_read", "Checking your calendar..."
+        )
 
         try:
             calendar = CalendarService(
@@ -149,7 +155,9 @@ async def check_calendars(state: AgentState) -> AgentState:
             ]
 
             # Find free slots
-            await _log_progress(state["workflow_id"], "finding_slots", "Finding available time slots...")
+            await _log_progress(
+                state["workflow_id"], "finding_slots", "Finding available time slots..."
+            )
 
             slots = await calendar.find_free_slots(
                 duration_minutes=state["meeting_duration"],
@@ -214,7 +222,6 @@ async def prepare_actions(state: AgentState) -> AgentState:
 
     slot = state["selected_slot"]
     start = datetime.fromisoformat(slot["start"])
-    end = datetime.fromisoformat(slot["end"])
 
     # Prepare actions
     actions = [
@@ -227,7 +234,7 @@ async def prepare_actions(state: AgentState) -> AgentState:
                 "start": slot["start"],
                 "end": slot["end"],
                 "attendees": state["attendees"],
-                "description": f"Meeting scheduled via Smart Task Executor",
+                "description": "Meeting scheduled via Smart Task Executor",
                 "add_meet_link": True,
             },
             "requires_approval": True,
@@ -239,21 +246,23 @@ async def prepare_actions(state: AgentState) -> AgentState:
 
     # Add email notification for each attendee
     for i, attendee in enumerate(state["attendees"]):
-        actions.append({
-            "action_type": ActionType.EMAIL_SEND.value,
-            "title": f"Send Email to {attendee}",
-            "description": f"Notify {attendee} about the meeting",
-            "payload": {
-                "to_email": attendee,
-                "meeting_title": state["meeting_title"],
-                "meeting_datetime": start.strftime("%A, %B %d, %Y at %I:%M %p"),
-                "meeting_duration": f"{state['meeting_duration']} minutes",
-            },
-            "requires_approval": True,
-            "api_name": "SendGrid",
-            "estimated_cost": 0.001,
-            "order": i + 1,
-        })
+        actions.append(
+            {
+                "action_type": ActionType.EMAIL_SEND.value,
+                "title": f"Send Email to {attendee}",
+                "description": f"Notify {attendee} about the meeting",
+                "payload": {
+                    "to_email": attendee,
+                    "meeting_title": state["meeting_title"],
+                    "meeting_datetime": start.strftime("%A, %B %d, %Y at %I:%M %p"),
+                    "meeting_duration": f"{state['meeting_duration']} minutes",
+                },
+                "requires_approval": True,
+                "api_name": "SendGrid",
+                "estimated_cost": 0.001,
+                "order": i + 1,
+            }
+        )
 
     return {
         **state,
@@ -308,27 +317,32 @@ async def await_action_approval(state: AgentState) -> AgentState:
     return state
 
 
-def should_continue(state: AgentState) -> str:
-    """Determine next step based on current state"""
+def route_after_parse(state: AgentState) -> str:
+    """Route after parsing request"""
     if state.get("error"):
         return "error"
+    return "check_calendars"
 
-    step = state.get("current_step", "parse_request")
 
-    if step == "parse_request":
-        return "check_calendars"
-    elif step == "check_calendars":
-        return "await_slot_selection"
-    elif step == "await_slot_selection":
-        if state.get("selected_slot"):
-            return "prepare_actions"
-        return END  # Wait for user input
-    elif step == "prepare_actions":
-        return "await_action_approval"
-    elif step == "await_action_approval":
-        return END  # Wait for user approval
-    else:
-        return END
+def route_after_calendars(state: AgentState) -> str:
+    """Route after checking calendars"""
+    if state.get("error"):
+        return "error"
+    return "await_slot_selection"
+
+
+def route_after_slot_selection(state: AgentState) -> str:
+    """Route after slot selection"""
+    if state.get("selected_slot"):
+        return "prepare_actions"
+    return END  # Wait for user input
+
+
+def route_after_prepare(state: AgentState) -> str:
+    """Route after preparing actions"""
+    if state.get("error"):
+        return "error"
+    return "await_action_approval"
 
 
 def handle_error(state: AgentState) -> AgentState:
@@ -353,38 +367,38 @@ def create_meeting_coordinator_graph():
 
     graph.add_conditional_edges(
         "parse_request",
-        should_continue,
+        route_after_parse,
         {
             "check_calendars": "check_calendars",
             "error": "error",
-        }
+        },
     )
 
     graph.add_conditional_edges(
         "check_calendars",
-        should_continue,
+        route_after_calendars,
         {
             "await_slot_selection": "await_slot_selection",
             "error": "error",
-        }
+        },
     )
 
     graph.add_conditional_edges(
         "await_slot_selection",
-        should_continue,
+        route_after_slot_selection,
         {
             "prepare_actions": "prepare_actions",
             END: END,
-        }
+        },
     )
 
     graph.add_conditional_edges(
         "prepare_actions",
-        should_continue,
+        route_after_prepare,
         {
             "await_action_approval": "await_action_approval",
             "error": "error",
-        }
+        },
     )
 
     graph.add_edge("await_action_approval", END)
@@ -484,12 +498,14 @@ async def _log_progress(workflow_id: str, event_type: str, message: str):
 
     # Send via WebSocket
     from app.api.websockets.connection_manager import manager
+
     await manager.broadcast_progress(workflow_id, "progress", {"message": message})
 
 
 async def _send_slot_options(workflow_id: str, slots: List[dict]):
     """Send time slot options to frontend via WebSocket"""
     from app.api.websockets.connection_manager import manager
+
     await manager.broadcast_progress(
         workflow_id,
         "slot_selection",
@@ -500,6 +516,7 @@ async def _send_slot_options(workflow_id: str, slots: List[dict]):
 async def _send_approval_request(workflow_id: str):
     """Notify frontend that actions are ready for approval"""
     from app.api.websockets.connection_manager import manager
+
     await manager.broadcast_progress(
         workflow_id,
         "approval_required",
