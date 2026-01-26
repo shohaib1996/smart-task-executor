@@ -87,29 +87,42 @@ class CalendarService:
         time_min: datetime = None,
         time_max: datetime = None,
         calendar_ids: List[str] = None,
+        attendee_emails: List[str] = None,
         working_hours: tuple = (9, 17),
     ) -> List[TimeSlot]:
-        """Find available time slots across calendars"""
+        """Find available time slots across calendars and attendees"""
         if time_min is None:
             time_min = datetime.utcnow()
         if time_max is None:
             time_max = time_min + timedelta(days=7)
         if calendar_ids is None:
             calendar_ids = ["primary"]
+        if attendee_emails is None:
+            attendee_emails = []
 
-        # Get busy times from freebusy API
+        # Build list of all calendars to check (user's + attendees')
+        all_calendars = calendar_ids.copy()
+        for email in attendee_emails:
+            if email not in all_calendars:
+                all_calendars.append(email)
+
+        # Get busy times from freebusy API for all participants
         body = {
             "timeMin": time_min.isoformat() + "Z",
             "timeMax": time_max.isoformat() + "Z",
-            "items": [{"id": cal_id} for cal_id in calendar_ids],
+            "items": [{"id": cal_id} for cal_id in all_calendars],
         }
 
         freebusy_result = self.service.freebusy().query(body=body).execute()
 
-        # Collect all busy periods
+        # Collect all busy periods from all participants
         busy_periods = []
-        for calendar_id in calendar_ids:
+        for calendar_id in all_calendars:
             calendar_busy = freebusy_result["calendars"].get(calendar_id, {})
+            # Check for errors (e.g., no access to attendee's calendar)
+            if "errors" in calendar_busy:
+                # Skip calendars we can't access - they'll need to confirm manually
+                continue
             for busy in calendar_busy.get("busy", []):
                 busy_periods.append(
                     (

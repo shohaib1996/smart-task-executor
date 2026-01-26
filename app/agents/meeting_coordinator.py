@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     workflow_id: str
     user_id: str
+    user_email: Optional[str]  # Organizer's email
     user_request: str
 
     # Extracted info
@@ -123,6 +124,9 @@ async def check_calendars(state: AgentState) -> AgentState:
                 "current_step": "error",
             }
 
+        # Store user's email for later use (confirmation email)
+        user_email = user.email
+
         # Log progress
         await _log_progress(
             state["workflow_id"], "calendar_read", "Checking your calendar..."
@@ -154,15 +158,24 @@ async def check_calendars(state: AgentState) -> AgentState:
                 for e in events
             ]
 
-            # Find free slots
-            await _log_progress(
-                state["workflow_id"], "finding_slots", "Finding available time slots..."
-            )
+            # Find free slots - check both user's and attendees' availability
+            attendees = state.get("attendees", [])
+            if attendees:
+                await _log_progress(
+                    state["workflow_id"],
+                    "finding_slots",
+                    f"Finding time slots when you and {len(attendees)} attendee(s) are all available..."
+                )
+            else:
+                await _log_progress(
+                    state["workflow_id"], "finding_slots", "Finding available time slots..."
+                )
 
             slots = await calendar.find_free_slots(
                 duration_minutes=state["meeting_duration"],
                 time_min=time_min,
                 time_max=time_max,
+                attendee_emails=attendees,
             )
 
             suggested_slots = [
@@ -177,6 +190,7 @@ async def check_calendars(state: AgentState) -> AgentState:
 
             return {
                 **state,
+                "user_email": user_email,
                 "user_events": user_events,
                 "suggested_slots": suggested_slots,
                 "current_step": "await_slot_selection",
@@ -186,6 +200,7 @@ async def check_calendars(state: AgentState) -> AgentState:
         except Exception as e:
             return {
                 **state,
+                "user_email": user_email,
                 "error": f"Calendar error: {str(e)}",
                 "current_step": "error",
             }
@@ -261,6 +276,29 @@ async def prepare_actions(state: AgentState) -> AgentState:
                 "api_name": "SendGrid",
                 "estimated_cost": 0.001,
                 "order": i + 1,
+            }
+        )
+
+    # Add confirmation email for the organizer (you)
+    organizer_email = state.get("user_email")
+    if organizer_email:
+        actions.append(
+            {
+                "action_type": ActionType.EMAIL_SEND.value,
+                "title": f"Send Confirmation to You ({organizer_email})",
+                "description": "Send yourself a confirmation email with meeting details",
+                "payload": {
+                    "to_email": organizer_email,
+                    "meeting_title": state["meeting_title"],
+                    "meeting_datetime": start.strftime("%A, %B %d, %Y at %I:%M %p"),
+                    "meeting_duration": f"{state['meeting_duration']} minutes",
+                    "is_organizer": True,
+                    "attendees": state["attendees"],
+                },
+                "requires_approval": True,
+                "api_name": "SendGrid",
+                "estimated_cost": 0.001,
+                "order": len(state["attendees"]) + 1,
             }
         )
 
@@ -423,6 +461,7 @@ async def run_meeting_coordinator(workflow_id: str, user_id: str):
             "messages": [],
             "workflow_id": workflow_id,
             "user_id": user_id,
+            "user_email": None,  # Will be populated in check_calendars
             "user_request": workflow.user_request,
             "meeting_title": None,
             "meeting_duration": None,

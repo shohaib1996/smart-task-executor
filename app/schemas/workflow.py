@@ -70,10 +70,19 @@ class WorkflowResponse(BaseModel):
         from_attributes = True
 
 
+class PendingSlot(BaseModel):
+    """Time slot awaiting user selection"""
+    id: str
+    start: str
+    end: str
+    duration_minutes: int
+
+
 class WorkflowDetailResponse(WorkflowResponse):
     """Detailed workflow response with actions and audit logs"""
     actions: List[ActionResponse] = []
     audit_logs: List[AuditLogResponse] = []
+    pending_slots: List[PendingSlot] = []
 
 
 # SSE Event schemas
@@ -96,10 +105,12 @@ class ApprovalRequiredEvent(BaseModel):
 
 class TimeSlotOption(BaseModel):
     id: str
-    datetime: datetime
+    start: datetime
+    end: datetime
     duration_minutes: int
-    attendees_available: List[str]
-    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class TimeSlotSelectionEvent(BaseModel):

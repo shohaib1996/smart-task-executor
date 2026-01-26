@@ -62,4 +62,5 @@ celerybeat.pid
 .DS_Store
 Thumbs.db
 
-# flow.txt
+flow.txt
+frontend-implementation-plan.txt

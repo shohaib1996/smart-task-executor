@@ -109,6 +109,17 @@ async def get_workflow(
     )
     audit_logs = logs_result.scalars().all()
 
+    # Extract pending slots from agent_state if workflow is awaiting approval
+    pending_slots = []
+    if workflow.status == WorkflowStatus.AWAITING_APPROVAL and workflow.agent_state:
+        try:
+            agent_state = json.loads(workflow.agent_state)
+            # Check if we're waiting for slot selection (no selected_slot yet)
+            if agent_state.get("suggested_slots") and not agent_state.get("selected_slot"):
+                pending_slots = agent_state["suggested_slots"]
+        except (json.JSONDecodeError, KeyError):
+            pass
+
     # Build response
     workflow_dict = {
         "id": workflow.id,
@@ -147,6 +158,7 @@ async def get_workflow(
             )
             for log in audit_logs
         ],
+        "pending_slots": pending_slots,
     }
 
     return WorkflowDetailResponse(**workflow_dict)
