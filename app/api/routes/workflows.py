@@ -56,7 +56,7 @@ async def create_workflow(
 @router.get("/", response_model=List[WorkflowResponse])
 async def list_workflows(
     skip: int = 0,
-    limit: int = 20,
+    limit: int = 10,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -95,9 +95,7 @@ async def get_workflow(
 
     # Load actions
     actions_result = await session.execute(
-        select(Action)
-        .where(Action.workflow_id == workflow_id)
-        .order_by(Action.order)
+        select(Action).where(Action.workflow_id == workflow_id).order_by(Action.order)
     )
     actions = actions_result.scalars().all()
 
@@ -115,7 +113,9 @@ async def get_workflow(
         try:
             agent_state = json.loads(workflow.agent_state)
             # Check if we're waiting for slot selection (no selected_slot yet)
-            if agent_state.get("suggested_slots") and not agent_state.get("selected_slot"):
+            if agent_state.get("suggested_slots") and not agent_state.get(
+                "selected_slot"
+            ):
                 pending_slots = agent_state["suggested_slots"]
         except (json.JSONDecodeError, KeyError):
             pass
@@ -205,7 +205,9 @@ async def approve_actions(
 
         if action:
             action.status = (
-                ActionStatus.APPROVED if action_approval.approved else ActionStatus.REJECTED
+                ActionStatus.APPROVED
+                if action_approval.approved
+                else ActionStatus.REJECTED
             )
 
     # Log approval
@@ -225,9 +227,14 @@ async def approve_actions(
 
     # Trigger execution of approved actions
     from app.tasks.workflow_tasks import execute_approved_actions
+
     execute_approved_actions.delay(workflow_id)
 
-    return {"message": "Actions processed", "approved": approved_count, "rejected": rejected_count}
+    return {
+        "message": "Actions processed",
+        "approved": approved_count,
+        "rejected": rejected_count,
+    }
 
 
 @router.put("/{workflow_id}/actions/{action_id}")

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import TypedDict, List, Optional, Annotated
 from langchain_openai import ChatOpenAI
@@ -20,6 +21,7 @@ from app.services.calendar import CalendarService
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 # Agent State
@@ -40,6 +42,9 @@ class AgentState(TypedDict):
     user_events: List[dict]
     attendee_availability: dict
     suggested_slots: List[dict]
+    inaccessible_calendars: List[str]  # Attendee emails whose calendars couldn't be accessed
+    conflict_info: Optional[dict]  # Info about why preferred time isn't available
+    preferred_datetime: Optional[str]  # Parsed preferred time (ISO format)
 
     # User selection
     selected_slot: Optional[dict]
@@ -61,6 +66,83 @@ llm = ChatOpenAI(
 )
 
 
+async def _parse_timeframe(preferred_timeframe: str | None) -> tuple[datetime, datetime, datetime | None]:
+    """Parse natural language timeframe into start and end datetime.
+
+    Returns:
+        tuple: (search_start, search_end, preferred_time or None)
+        - search_start/end: Range to search for available slots
+        - preferred_time: Exact preferred datetime if user specified one (e.g., "2PM")
+    """
+    now = datetime.utcnow()
+
+    if not preferred_timeframe:
+        # Default: next 2 weeks
+        return now, now + timedelta(days=14), None
+
+    # Use LLM to parse natural language timeframe
+    today_str = now.strftime("%A, %B %d, %Y")
+
+    # Calculate what "next friday" would be for reference
+    days_until_friday = (4 - now.weekday()) % 7
+    if days_until_friday == 0:
+        days_until_friday = 7  # If today is Friday, "next Friday" is in 7 days
+    next_friday = now + timedelta(days=days_until_friday)
+    next_friday_str = next_friday.strftime("%Y-%m-%d")
+
+    prompt = f"""Today is {today_str} (this is the CURRENT date, not a hypothetical).
+
+Parse this timeframe: "{preferred_timeframe}"
+
+For reference:
+- Today's date: {now.strftime("%Y-%m-%d")}
+- Next Friday: {next_friday_str}
+
+Return the start date and end date for searching available meeting slots.
+Examples:
+- "next friday" → {{"start_date": "{next_friday_str}", "end_date": "{next_friday_str}", "preferred_hour": null}}
+- "next friday at 2PM" → {{"start_date": "{next_friday_str}", "end_date": "{next_friday_str}", "preferred_hour": 14}}
+- "tomorrow at 3:30PM" → {{"start_date": "...", "end_date": "...", "preferred_hour": 15, "preferred_minute": 30}}
+- "tomorrow" → start tomorrow, end tomorrow, no preferred hour
+
+Respond ONLY with JSON (no markdown, no explanation):
+{{"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "preferred_hour": null or number, "preferred_minute": null or number}}
+"""
+
+    try:
+        response = await llm.ainvoke(prompt)
+        content = response.content.strip()
+
+        # Clean up response
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0]
+
+        parsed = json.loads(content.strip())
+
+        start_date = datetime.strptime(parsed["start_date"], "%Y-%m-%d")
+        end_date = datetime.strptime(parsed["end_date"], "%Y-%m-%d")
+
+        # Track preferred time if specified
+        preferred_time = None
+        if parsed.get("preferred_hour") is not None:
+            preferred_hour = int(parsed["preferred_hour"])
+            preferred_minute = int(parsed.get("preferred_minute") or 0)
+            preferred_time = start_date.replace(hour=preferred_hour, minute=preferred_minute)
+            # Also adjust search start to the preferred time
+            start_date = start_date.replace(hour=preferred_hour, minute=preferred_minute)
+
+        # End date should cover the full day
+        end_date = end_date.replace(hour=23, minute=59)
+
+        return start_date, end_date, preferred_time
+
+    except Exception:
+        # Fallback to default
+        return now, now + timedelta(days=14), None
+
+
 async def parse_request(state: AgentState) -> AgentState:
     """Parse user's meeting request to extract details"""
     prompt = f"""Analyze this meeting request and extract the following information:
@@ -68,16 +150,18 @@ async def parse_request(state: AgentState) -> AgentState:
 Request: "{state["user_request"]}"
 
 Extract:
-1. Meeting title/topic
+1. Meeting title/topic - REQUIRED. If not explicitly stated, generate a descriptive title based on the request (e.g., "Meeting with [person name]", "Team Sync", etc.)
 2. Duration in minutes (default 30 if not specified)
-3. Attendees (email addresses or names)
-4. Preferred timeframe (e.g., "next week", "tomorrow afternoon")
+3. Attendees (email addresses only - extract any email addresses mentioned)
+4. Preferred timeframe (e.g., "next week", "tomorrow afternoon", "next friday at 2PM")
 
-Respond in JSON format:
+IMPORTANT: meeting_title must NEVER be null. Always generate a reasonable title.
+
+Respond in JSON format (no markdown):
 {{
-    "meeting_title": "string",
+    "meeting_title": "string (required, never null)",
     "duration_minutes": number,
-    "attendees": ["list of attendees"],
+    "attendees": ["list of email addresses"],
     "preferred_timeframe": "string or null"
 }}
 """
@@ -94,9 +178,14 @@ Respond in JSON format:
 
         parsed = json.loads(content.strip())
 
+        # Ensure meeting_title is never null
+        meeting_title = parsed.get("meeting_title")
+        if not meeting_title:
+            meeting_title = "Scheduled Meeting"
+
         return {
             **state,
-            "meeting_title": parsed.get("meeting_title"),
+            "meeting_title": meeting_title,
             "meeting_duration": parsed.get("duration_minutes", 30),
             "attendees": parsed.get("attendees", []),
             "preferred_timeframe": parsed.get("preferred_timeframe"),
@@ -138,9 +227,8 @@ async def check_calendars(state: AgentState) -> AgentState:
                 refresh_token=user.google_refresh_token,
             )
 
-            # Determine time range
-            time_min = datetime.utcnow()
-            time_max = time_min + timedelta(days=14)  # Next 2 weeks
+            # Determine time range based on user's preferred timeframe
+            time_min, time_max, preferred_time = await _parse_timeframe(state.get("preferred_timeframe"))
 
             # Get user's events
             events = await calendar.get_events(
@@ -158,24 +246,20 @@ async def check_calendars(state: AgentState) -> AgentState:
                 for e in events
             ]
 
-            # Find free slots - check both user's and attendees' availability
+            # Find free slots based on organizer's and attendees' calendars
             attendees = state.get("attendees", [])
-            if attendees:
-                await _log_progress(
-                    state["workflow_id"],
-                    "finding_slots",
-                    f"Finding time slots when you and {len(attendees)} attendee(s) are all available..."
-                )
-            else:
-                await _log_progress(
-                    state["workflow_id"], "finding_slots", "Finding available time slots..."
-                )
+            await _log_progress(
+                state["workflow_id"],
+                "finding_slots",
+                "Finding available time slots..."
+            )
 
-            slots = await calendar.find_free_slots(
+            slots, inaccessible_calendars, conflict_info = await calendar.find_free_slots(
                 duration_minutes=state["meeting_duration"],
                 time_min=time_min,
                 time_max=time_max,
                 attendee_emails=attendees,
+                preferred_time=preferred_time,
             )
 
             suggested_slots = [
@@ -188,11 +272,24 @@ async def check_calendars(state: AgentState) -> AgentState:
                 for i, slot in enumerate(slots[:5])  # Top 5 slots
             ]
 
+            # Convert conflict_info to dict for JSON serialization
+            conflict_dict = None
+            if conflict_info:
+                conflict_dict = {
+                    "requested_start": conflict_info.requested_start.isoformat(),
+                    "requested_end": conflict_info.requested_end.isoformat(),
+                    "conflicting_calendars": conflict_info.conflicting_calendars,
+                    "reason": conflict_info.reason,
+                }
+
             return {
                 **state,
                 "user_email": user_email,
                 "user_events": user_events,
                 "suggested_slots": suggested_slots,
+                "inaccessible_calendars": inaccessible_calendars,
+                "conflict_info": conflict_dict,
+                "preferred_datetime": preferred_time.isoformat() if preferred_time else None,
                 "current_step": "await_slot_selection",
                 "needs_user_input": True,
             }
@@ -220,8 +317,13 @@ async def await_slot_selection(state: AgentState) -> AgentState:
             workflow.agent_state = json.dumps(state)
             await session.commit()
 
-    # Send time slot options via WebSocket
-    await _send_slot_options(state["workflow_id"], state["suggested_slots"])
+    # Send time slot options via WebSocket (include conflict info for user feedback)
+    await _send_slot_options(
+        state["workflow_id"],
+        state["suggested_slots"],
+        state.get("inaccessible_calendars", []),
+        state.get("conflict_info"),
+    )
 
     return state  # Agent pauses here until user selects
 
@@ -236,19 +338,28 @@ async def prepare_actions(state: AgentState) -> AgentState:
         }
 
     slot = state["selected_slot"]
-    start = datetime.fromisoformat(slot["start"])
 
-    # Prepare actions
+    # Build attendee list: include both the invited attendees AND the organizer
+    # Google Calendar will send invite emails to all attendees automatically
+    organizer_email = state.get("user_email")
+    all_attendees = list(state["attendees"])  # Copy the list
+
+    # Add organizer to attendees if not already included
+    if organizer_email and organizer_email not in all_attendees:
+        all_attendees.append(organizer_email)
+
+    # Only action needed: Create Calendar Event
+    # Google Calendar automatically sends email invites to all attendees
     actions = [
         {
             "action_type": ActionType.CALENDAR_CREATE.value,
             "title": "Create Calendar Event",
-            "description": f"Create meeting: {state['meeting_title']}",
+            "description": f"Create meeting: {state['meeting_title']} (Google Calendar will send invites to all {len(all_attendees)} attendees)",
             "payload": {
                 "summary": state["meeting_title"],
                 "start": slot["start"],
                 "end": slot["end"],
-                "attendees": state["attendees"],
+                "attendees": all_attendees,
                 "description": "Meeting scheduled via Smart Task Executor",
                 "add_meet_link": True,
             },
@@ -258,49 +369,6 @@ async def prepare_actions(state: AgentState) -> AgentState:
             "order": 0,
         },
     ]
-
-    # Add email notification for each attendee
-    for i, attendee in enumerate(state["attendees"]):
-        actions.append(
-            {
-                "action_type": ActionType.EMAIL_SEND.value,
-                "title": f"Send Email to {attendee}",
-                "description": f"Notify {attendee} about the meeting",
-                "payload": {
-                    "to_email": attendee,
-                    "meeting_title": state["meeting_title"],
-                    "meeting_datetime": start.strftime("%A, %B %d, %Y at %I:%M %p"),
-                    "meeting_duration": f"{state['meeting_duration']} minutes",
-                },
-                "requires_approval": True,
-                "api_name": "SendGrid",
-                "estimated_cost": 0.001,
-                "order": i + 1,
-            }
-        )
-
-    # Add confirmation email for the organizer (you)
-    organizer_email = state.get("user_email")
-    if organizer_email:
-        actions.append(
-            {
-                "action_type": ActionType.EMAIL_SEND.value,
-                "title": f"Send Confirmation to You ({organizer_email})",
-                "description": "Send yourself a confirmation email with meeting details",
-                "payload": {
-                    "to_email": organizer_email,
-                    "meeting_title": state["meeting_title"],
-                    "meeting_datetime": start.strftime("%A, %B %d, %Y at %I:%M %p"),
-                    "meeting_duration": f"{state['meeting_duration']} minutes",
-                    "is_organizer": True,
-                    "attendees": state["attendees"],
-                },
-                "requires_approval": True,
-                "api_name": "SendGrid",
-                "estimated_cost": 0.001,
-                "order": len(state["attendees"]) + 1,
-            }
-        )
 
     return {
         **state,
@@ -470,6 +538,9 @@ async def run_meeting_coordinator(workflow_id: str, user_id: str):
             "user_events": [],
             "attendee_availability": {},
             "suggested_slots": [],
+            "inaccessible_calendars": [],
+            "conflict_info": None,
+            "preferred_datetime": None,
             "selected_slot": None,
             "proposed_actions": [],
             "current_step": "parse_request",
@@ -541,14 +612,30 @@ async def _log_progress(workflow_id: str, event_type: str, message: str):
     await manager.broadcast_progress(workflow_id, "progress", {"message": message})
 
 
-async def _send_slot_options(workflow_id: str, slots: List[dict]):
+async def _send_slot_options(
+    workflow_id: str,
+    slots: List[dict],
+    inaccessible_calendars: List[str] = None,
+    conflict_info: dict = None,
+):
     """Send time slot options to frontend via WebSocket"""
     from app.api.websockets.connection_manager import manager
+
+    # Build message based on whether there was a conflict
+    if conflict_info:
+        message = f"Your preferred time is not available: {conflict_info['reason']}. Here are alternative times that work for everyone:"
+    else:
+        message = "Please select a time slot"
 
     await manager.broadcast_progress(
         workflow_id,
         "slot_selection",
-        {"slots": slots, "message": "Please select a time slot"},
+        {
+            "slots": slots,
+            "message": message,
+            "inaccessible_calendars": inaccessible_calendars or [],
+            "conflict_info": conflict_info,
+        },
     )
 
 

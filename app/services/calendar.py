@@ -22,6 +22,14 @@ class TimeSlot(BaseModel):
     available: bool = True
 
 
+class ConflictInfo(BaseModel):
+    """Information about a scheduling conflict"""
+    requested_start: datetime
+    requested_end: datetime
+    conflicting_calendars: List[str]  # Email addresses of people who have conflicts
+    reason: str  # Human-readable explanation
+
+
 class CalendarService:
     """Service for interacting with Google Calendar API"""
 
@@ -70,9 +78,7 @@ class CalendarService:
                     summary=event.get("summary", "No title"),
                     start=datetime.fromisoformat(start.replace("Z", "+00:00")),
                     end=datetime.fromisoformat(end.replace("Z", "+00:00")),
-                    attendees=[
-                        a.get("email", "") for a in event.get("attendees", [])
-                    ],
+                    attendees=[a.get("email", "") for a in event.get("attendees", [])],
                     location=event.get("location"),
                     description=event.get("description"),
                     meet_link=event.get("hangoutLink"),
@@ -89,8 +95,24 @@ class CalendarService:
         calendar_ids: List[str] = None,
         attendee_emails: List[str] = None,
         working_hours: tuple = (9, 17),
-    ) -> List[TimeSlot]:
-        """Find available time slots across calendars and attendees"""
+        allow_weekends: bool = True,
+        preferred_time: datetime = None,
+    ) -> tuple[List[TimeSlot], List[str], Optional[ConflictInfo]]:
+        """Find available time slots based on organizer's and attendees' calendars.
+
+        Args:
+            duration_minutes: Length of the meeting
+            time_min: Start of search range
+            time_max: End of search range
+            calendar_ids: Organizer's calendar IDs
+            attendee_emails: List of attendee email addresses
+            working_hours: Tuple of (start_hour, end_hour)
+            allow_weekends: Whether to include weekend slots
+            preferred_time: User's preferred meeting time (if specified)
+
+        Returns:
+            tuple: (list of free slots, list of inaccessible calendars, conflict info if preferred time has conflicts)
+        """
         if time_min is None:
             time_min = datetime.utcnow()
         if time_max is None:
@@ -100,36 +122,43 @@ class CalendarService:
         if attendee_emails is None:
             attendee_emails = []
 
-        # Build list of all calendars to check (user's + attendees')
+        # Build list of all calendars to check (organizer's + attendees')
         all_calendars = calendar_ids.copy()
         for email in attendee_emails:
             if email not in all_calendars:
                 all_calendars.append(email)
 
-        # Get busy times from freebusy API for all participants
+        # Try to get freebusy info for all calendars
         body = {
             "timeMin": time_min.isoformat() + "Z",
             "timeMax": time_max.isoformat() + "Z",
             "items": [{"id": cal_id} for cal_id in all_calendars],
         }
 
-        freebusy_result = self.service.freebusy().query(body=body).execute()
+        try:
+            freebusy_result = self.service.freebusy().query(body=body).execute()
+        except Exception:
+            freebusy_result = {"calendars": {}}
 
-        # Collect all busy periods from all participants
+        # Collect busy periods and track inaccessible calendars
         busy_periods = []
+        busy_periods_by_calendar = {}  # Track who is busy when
+        inaccessible_calendars = []
+
         for calendar_id in all_calendars:
-            calendar_busy = freebusy_result["calendars"].get(calendar_id, {})
-            # Check for errors (e.g., no access to attendee's calendar)
+            calendar_busy = freebusy_result.get("calendars", {}).get(calendar_id, {})
+            # Track calendars we couldn't access (but don't fail)
             if "errors" in calendar_busy:
-                # Skip calendars we can't access - they'll need to confirm manually
+                if calendar_id not in calendar_ids:  # Only track attendee calendars, not organizer's
+                    inaccessible_calendars.append(calendar_id)
                 continue
+
+            busy_periods_by_calendar[calendar_id] = []
             for busy in calendar_busy.get("busy", []):
-                busy_periods.append(
-                    (
-                        datetime.fromisoformat(busy["start"].replace("Z", "+00:00")),
-                        datetime.fromisoformat(busy["end"].replace("Z", "+00:00")),
-                    )
-                )
+                busy_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
+                busy_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
+                busy_periods.append((busy_start, busy_end))
+                busy_periods_by_calendar[calendar_id].append((busy_start, busy_end))
 
         # Sort busy periods
         busy_periods.sort(key=lambda x: x[0])
@@ -148,8 +177,8 @@ class CalendarService:
                 )
                 continue
 
-            # Skip weekends
-            if current.weekday() >= 5:
+            # Skip weekends (unless allowed)
+            if not allow_weekends and current.weekday() >= 5:
                 current = current + timedelta(days=1)
                 continue
 
@@ -174,15 +203,41 @@ class CalendarService:
                     break
 
             if is_free:
-                free_slots.append(
-                    TimeSlot(start=current, end=slot_end, available=True)
-                )
+                free_slots.append(TimeSlot(start=current, end=slot_end, available=True))
                 current = slot_end
             else:
                 # Already moved to end of busy period
                 pass
 
-        return free_slots[:10]  # Return top 10 slots
+        # Check if preferred time has conflicts
+        conflict_info = None
+        if preferred_time:
+            preferred_end = preferred_time + timedelta(minutes=duration_minutes)
+            conflicting_calendars = []
+
+            for calendar_id, periods in busy_periods_by_calendar.items():
+                for busy_start, busy_end in periods:
+                    # Check if preferred time overlaps with this busy period
+                    if not (preferred_end <= busy_start or preferred_time >= busy_end):
+                        conflicting_calendars.append(calendar_id)
+                        break  # Only count each calendar once
+
+            if conflicting_calendars:
+                # Build human-readable reason
+                if len(conflicting_calendars) == 1:
+                    reason = f"{conflicting_calendars[0]} has a conflict at this time"
+                else:
+                    names = ", ".join(conflicting_calendars[:-1]) + f" and {conflicting_calendars[-1]}"
+                    reason = f"{names} have conflicts at this time"
+
+                conflict_info = ConflictInfo(
+                    requested_start=preferred_time,
+                    requested_end=preferred_end,
+                    conflicting_calendars=conflicting_calendars,
+                    reason=reason,
+                )
+
+        return free_slots[:10], inaccessible_calendars, conflict_info
 
     async def create_event(
         self,
@@ -250,9 +305,11 @@ class CalendarService:
     ) -> CalendarEvent:
         """Update an existing calendar event"""
         # Get current event
-        event = self.service.events().get(
-            calendarId=calendar_id, eventId=event_id
-        ).execute()
+        event = (
+            self.service.events()
+            .get(calendarId=calendar_id, eventId=event_id)
+            .execute()
+        )
 
         # Update fields
         if summary:
@@ -285,11 +342,7 @@ class CalendarService:
             meet_link=updated.get("hangoutLink"),
         )
 
-    async def delete_event(
-        self, event_id: str, calendar_id: str = "primary"
-    ) -> bool:
+    async def delete_event(self, event_id: str, calendar_id: str = "primary") -> bool:
         """Delete a calendar event"""
-        self.service.events().delete(
-            calendarId=calendar_id, eventId=event_id
-        ).execute()
+        self.service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
         return True
