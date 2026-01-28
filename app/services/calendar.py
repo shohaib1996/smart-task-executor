@@ -94,7 +94,7 @@ class CalendarService:
         time_max: datetime = None,
         calendar_ids: List[str] = None,
         attendee_emails: List[str] = None,
-        working_hours: tuple = (9, 17),
+        working_hours: tuple = (0, 24),
         allow_weekends: bool = True,
         preferred_time: datetime = None,
     ) -> tuple[List[TimeSlot], List[str], Optional[ConflictInfo]]:
@@ -163,11 +163,25 @@ class CalendarService:
         # Sort busy periods
         busy_periods.sort(key=lambda x: x[0])
 
+        # Normalize busy periods to naive datetimes (remove timezone info for comparison)
+        normalized_busy_periods = []
+        for busy_start, busy_end in busy_periods:
+            # Convert to naive datetime if offset-aware
+            if busy_start.tzinfo is not None:
+                busy_start = busy_start.replace(tzinfo=None)
+            if busy_end.tzinfo is not None:
+                busy_end = busy_end.replace(tzinfo=None)
+            normalized_busy_periods.append((busy_start, busy_end))
+
         # Find free slots
         free_slots = []
         current = time_min
+        max_iterations = 1000  # Safety limit to prevent infinite loops
+        iterations = 0
 
-        while current < time_max:
+        while current < time_max and iterations < max_iterations:
+            iterations += 1
+
             # Skip non-working hours
             if current.hour < working_hours[0]:
                 current = current.replace(hour=working_hours[0], minute=0)
@@ -195,7 +209,7 @@ class CalendarService:
 
             # Check if slot conflicts with busy periods
             is_free = True
-            for busy_start, busy_end in busy_periods:
+            for busy_start, busy_end in normalized_busy_periods:
                 if not (slot_end <= busy_start or current >= busy_end):
                     is_free = False
                     # Move to end of busy period
@@ -205,9 +219,13 @@ class CalendarService:
             if is_free:
                 free_slots.append(TimeSlot(start=current, end=slot_end, available=True))
                 current = slot_end
-            else:
-                # Already moved to end of busy period
-                pass
+            # Note: if not free, current was already moved to busy_end
+
+            # Stop if we have enough slots
+            if len(free_slots) >= 10:
+                break
+
+        # Safety check - if we hit max iterations, just return what we have
 
         # Check if preferred time has conflicts
         conflict_info = None
@@ -217,17 +235,29 @@ class CalendarService:
 
             for calendar_id, periods in busy_periods_by_calendar.items():
                 for busy_start, busy_end in periods:
+                    # Normalize timezone for comparison
+                    if busy_start.tzinfo is not None:
+                        busy_start = busy_start.replace(tzinfo=None)
+                    if busy_end.tzinfo is not None:
+                        busy_end = busy_end.replace(tzinfo=None)
                     # Check if preferred time overlaps with this busy period
-                    if not (preferred_end <= busy_start or preferred_time >= busy_end):
+                    overlaps = not (preferred_end <= busy_start or preferred_time >= busy_end)
+                    if overlaps:
                         conflicting_calendars.append(calendar_id)
                         break  # Only count each calendar once
 
             if conflicting_calendars:
                 # Build human-readable reason
-                if len(conflicting_calendars) == 1:
-                    reason = f"{conflicting_calendars[0]} has a conflict at this time"
+                # Replace "primary" with "You" for the user's own calendar
+                display_names = ["You" if c == "primary" else c for c in conflicting_calendars]
+
+                if len(display_names) == 1:
+                    if display_names[0] == "You":
+                        reason = "You already have a meeting scheduled at this time"
+                    else:
+                        reason = f"{display_names[0]} has a conflict at this time"
                 else:
-                    names = ", ".join(conflicting_calendars[:-1]) + f" and {conflicting_calendars[-1]}"
+                    names = ", ".join(display_names[:-1]) + f" and {display_names[-1]}"
                     reason = f"{names} have conflicts at this time"
 
                 conflict_info = ConflictInfo(

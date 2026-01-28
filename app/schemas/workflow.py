@@ -78,11 +78,21 @@ class PendingSlot(BaseModel):
     duration_minutes: int
 
 
+class ConflictInfoResponse(BaseModel):
+    """Information about a scheduling conflict"""
+    requested_start: str
+    requested_end: str
+    conflicting_calendars: List[str]
+    reason: str
+
+
 class WorkflowDetailResponse(WorkflowResponse):
     """Detailed workflow response with actions and audit logs"""
     actions: List[ActionResponse] = []
     audit_logs: List[AuditLogResponse] = []
     pending_slots: List[PendingSlot] = []
+    conflict_info: Optional[ConflictInfoResponse] = None
+    inaccessible_calendars: List[str] = []
 
 
 # SSE Event schemas

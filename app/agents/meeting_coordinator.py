@@ -1,5 +1,4 @@
 import json
-import logging
 from datetime import datetime, timedelta
 from typing import TypedDict, List, Optional, Annotated
 from langchain_openai import ChatOpenAI
@@ -21,7 +20,6 @@ from app.services.calendar import CalendarService
 
 
 settings = get_settings()
-logger = logging.getLogger(__name__)
 
 
 # Agent State
@@ -248,6 +246,15 @@ async def check_calendars(state: AgentState) -> AgentState:
 
             # Find free slots based on organizer's and attendees' calendars
             attendees = state.get("attendees", [])
+
+            # Log attendee availability check if there are attendees
+            if attendees:
+                await _log_progress(
+                    state["workflow_id"],
+                    "checking_attendees",
+                    f"Checking availability for {len(attendees)} attendee(s)..."
+                )
+
             await _log_progress(
                 state["workflow_id"],
                 "finding_slots",
@@ -262,6 +269,14 @@ async def check_calendars(state: AgentState) -> AgentState:
                 preferred_time=preferred_time,
             )
 
+            # Log inaccessible calendars to UI if any
+            if inaccessible_calendars:
+                await _log_progress(
+                    state["workflow_id"],
+                    "inaccessible_calendars",
+                    f"Could not check availability for: {', '.join(inaccessible_calendars)}. Their calendars are private or not accessible."
+                )
+
             suggested_slots = [
                 {
                     "id": f"slot_{i}",
@@ -271,6 +286,20 @@ async def check_calendars(state: AgentState) -> AgentState:
                 }
                 for i, slot in enumerate(slots[:5])  # Top 5 slots
             ]
+
+            # Handle case when no slots are found
+            if not suggested_slots:
+                await _log_progress(
+                    state["workflow_id"],
+                    "no_slots_found",
+                    "No available time slots found in the requested time range. Try a different date or time."
+                )
+                return {
+                    **state,
+                    "user_email": user_email,
+                    "error": "No available time slots found. All slots in the requested time range may be busy.",
+                    "current_step": "error",
+                }
 
             # Convert conflict_info to dict for JSON serialization
             conflict_dict = None
@@ -585,12 +614,14 @@ async def continue_after_selection(workflow_id: str, option_id: str, user_id: st
         state["current_step"] = "prepare_actions"
         state["needs_user_input"] = False
 
-        graph = create_meeting_coordinator_graph()
+        # Directly call prepare_actions and await_action_approval
+        # instead of re-running the entire graph (which would re-check calendars)
+        state = await prepare_actions(state)
 
-        # Continue from prepare_actions
-        final_state = await graph.ainvoke(state)
+        if not state.get("error"):
+            state = await await_action_approval(state)
 
-        workflow.agent_state = json.dumps(final_state)
+        workflow.agent_state = json.dumps(state)
         await session.commit()
 
 

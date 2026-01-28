@@ -107,8 +107,10 @@ async def get_workflow(
     )
     audit_logs = logs_result.scalars().all()
 
-    # Extract pending slots from agent_state if workflow is awaiting approval
+    # Extract pending slots, conflict info, and inaccessible calendars from agent_state
     pending_slots = []
+    conflict_info = None
+    inaccessible_calendars = []
     if workflow.status == WorkflowStatus.AWAITING_APPROVAL and workflow.agent_state:
         try:
             agent_state = json.loads(workflow.agent_state)
@@ -117,6 +119,8 @@ async def get_workflow(
                 "selected_slot"
             ):
                 pending_slots = agent_state["suggested_slots"]
+                conflict_info = agent_state.get("conflict_info")
+                inaccessible_calendars = agent_state.get("inaccessible_calendars", [])
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -159,6 +163,8 @@ async def get_workflow(
             for log in audit_logs
         ],
         "pending_slots": pending_slots,
+        "conflict_info": conflict_info,
+        "inaccessible_calendars": inaccessible_calendars,
     }
 
     return WorkflowDetailResponse(**workflow_dict)

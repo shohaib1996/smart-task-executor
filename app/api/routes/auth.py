@@ -108,8 +108,13 @@ async def google_callback(
     await session.commit()
     await session.refresh(user)
 
-    # Create JWT token
-    access_token = create_access_token(data={"sub": user.id})
+    # Create JWT token with user info
+    access_token = create_access_token(data={
+        "sub": str(user.id),
+        "name": user.name,
+        "email": user.email,
+        "picture": user.picture,
+    })
 
     # Redirect to frontend with token
     return RedirectResponse(
