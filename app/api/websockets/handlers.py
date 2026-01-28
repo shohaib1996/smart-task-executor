@@ -40,12 +40,13 @@ async def workflow_websocket(
             elif message_type == "select_option":
                 # User selected an option (e.g., time slot)
                 # This will be processed by the agent
-                from app.tasks.workflow_tasks import process_user_selection
-                process_user_selection.delay(
+                import asyncio
+                from app.tasks.background_tasks import process_user_selection
+                asyncio.create_task(process_user_selection(
                     workflow_id,
                     data.get("option_id"),
                     user_id,
-                )
+                ))
 
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id, workflow_id)

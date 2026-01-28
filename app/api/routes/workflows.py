@@ -17,7 +17,8 @@ from app.schemas.workflow import (
     ActionResponse,
     AuditLogResponse,
 )
-from app.tasks.workflow_tasks import start_workflow_task
+from app.tasks import background_tasks
+import asyncio
 
 router = APIRouter()
 
@@ -47,8 +48,8 @@ async def create_workflow(
     await session.commit()
     await session.refresh(workflow)
 
-    # Trigger async workflow processing
-    start_workflow_task.delay(workflow.id, current_user.id)
+    # Trigger async workflow processing (runs in background)
+    asyncio.create_task(background_tasks.start_workflow_task(workflow.id, current_user.id))
 
     return WorkflowResponse.model_validate(workflow)
 
@@ -231,10 +232,8 @@ async def approve_actions(
     workflow.status = WorkflowStatus.EXECUTING
     await session.commit()
 
-    # Trigger execution of approved actions
-    from app.tasks.workflow_tasks import execute_approved_actions
-
-    execute_approved_actions.delay(workflow_id)
+    # Trigger execution of approved actions (runs in background)
+    asyncio.create_task(background_tasks.execute_approved_actions(workflow_id))
 
     return {
         "message": "Actions processed",
