@@ -274,7 +274,7 @@ async def check_calendars(state: AgentState) -> AgentState:
                 await _log_progress(
                     state["workflow_id"],
                     "inaccessible_calendars",
-                    f"Could not check availability for: {', '.join(inaccessible_calendars)}. Their calendars are private or not accessible."
+                    f"Could not check availability for: {', '.join(inaccessible_calendars)}. They need to log into the app to grant calendar access."
                 )
 
             suggested_slots = [

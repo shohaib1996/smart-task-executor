@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from pydantic import BaseModel
+
+from app.services.token_service import TokenService
 
 
 class CalendarEvent(BaseModel):
@@ -87,6 +89,62 @@ class CalendarService:
 
         return events
 
+    async def _get_attendee_busy_periods(
+        self,
+        attendee_email: str,
+        time_min: datetime,
+        time_max: datetime,
+    ) -> Tuple[List[Tuple[datetime, datetime]], Optional[str]]:
+        """
+        Get busy periods for an attendee using their own stored tokens.
+
+        Args:
+            attendee_email: Attendee's email address
+            time_min: Start of search range
+            time_max: End of search range
+
+        Returns:
+            Tuple of (list of busy periods, error message if any)
+        """
+        # Try to get valid tokens for this attendee from the database
+        access_token, refresh_token, error = await TokenService.get_valid_tokens_by_email(attendee_email)
+
+        if error:
+            return [], error
+
+        try:
+            # Create a calendar service using the attendee's tokens
+            attendee_credentials = Credentials(
+                token=access_token,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+            )
+            attendee_service = build("calendar", "v3", credentials=attendee_credentials)
+
+            # Query their calendar's freebusy
+            body = {
+                "timeMin": time_min.isoformat() + "Z",
+                "timeMax": time_max.isoformat() + "Z",
+                "items": [{"id": "primary"}],  # Check their primary calendar
+            }
+
+            freebusy_result = attendee_service.freebusy().query(body=body).execute()
+            calendar_busy = freebusy_result.get("calendars", {}).get("primary", {})
+
+            if "errors" in calendar_busy:
+                return [], f"Could not access calendar for {attendee_email}"
+
+            busy_periods = []
+            for busy in calendar_busy.get("busy", []):
+                busy_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
+                busy_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
+                busy_periods.append((busy_start, busy_end))
+
+            return busy_periods, None
+
+        except Exception as e:
+            return [], f"Error checking calendar for {attendee_email}: {str(e)}"
+
     async def find_free_slots(
         self,
         duration_minutes: int,
@@ -122,17 +180,16 @@ class CalendarService:
         if attendee_emails is None:
             attendee_emails = []
 
-        # Build list of all calendars to check (organizer's + attendees')
-        all_calendars = calendar_ids.copy()
-        for email in attendee_emails:
-            if email not in all_calendars:
-                all_calendars.append(email)
+        # Collect busy periods and track inaccessible calendars
+        busy_periods = []
+        busy_periods_by_calendar: Dict[str, List[Tuple[datetime, datetime]]] = {}
+        inaccessible_calendars = []
 
-        # Try to get freebusy info for all calendars
+        # First, get organizer's busy periods using their own service
         body = {
             "timeMin": time_min.isoformat() + "Z",
             "timeMax": time_max.isoformat() + "Z",
-            "items": [{"id": cal_id} for cal_id in all_calendars],
+            "items": [{"id": cal_id} for cal_id in calendar_ids],
         }
 
         try:
@@ -140,17 +197,10 @@ class CalendarService:
         except Exception:
             freebusy_result = {"calendars": {}}
 
-        # Collect busy periods and track inaccessible calendars
-        busy_periods = []
-        busy_periods_by_calendar = {}  # Track who is busy when
-        inaccessible_calendars = []
-
-        for calendar_id in all_calendars:
+        # Process organizer's calendars
+        for calendar_id in calendar_ids:
             calendar_busy = freebusy_result.get("calendars", {}).get(calendar_id, {})
-            # Track calendars we couldn't access (but don't fail)
             if "errors" in calendar_busy:
-                if calendar_id not in calendar_ids:  # Only track attendee calendars, not organizer's
-                    inaccessible_calendars.append(calendar_id)
                 continue
 
             busy_periods_by_calendar[calendar_id] = []
@@ -159,6 +209,20 @@ class CalendarService:
                 busy_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
                 busy_periods.append((busy_start, busy_end))
                 busy_periods_by_calendar[calendar_id].append((busy_start, busy_end))
+
+        # Now check each attendee using THEIR OWN tokens
+        for attendee_email in attendee_emails:
+            attendee_busy, error = await self._get_attendee_busy_periods(
+                attendee_email, time_min, time_max
+            )
+
+            if error:
+                # Attendee not registered or token issue
+                inaccessible_calendars.append(attendee_email)
+            else:
+                # Successfully got their availability
+                busy_periods_by_calendar[attendee_email] = attendee_busy
+                busy_periods.extend(attendee_busy)
 
         # Sort busy periods
         busy_periods.sort(key=lambda x: x[0])
