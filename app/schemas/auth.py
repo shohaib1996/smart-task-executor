@@ -20,6 +20,11 @@ class UserResponse(BaseModel):
     email: EmailStr
     name: str
     picture: Optional[str] = None
+    timezone: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class UpdateTimezoneRequest(BaseModel):
+    timezone: str  # IANA timezone string e.g., "Asia/Dhaka", "America/New_York"
