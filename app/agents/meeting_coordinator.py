@@ -109,13 +109,21 @@ For reference:
 - Next Friday: {next_friday_str}
 - User's default timezone: {user_timezone or "UTC"}
 
-IMPORTANT: Detect timezone from the request. Common abbreviations:
-- BST (Bangladesh Standard Time) → "Asia/Dhaka"
-- BST (British Summer Time) → "Europe/London" (only in summer months)
-- EST/EDT → "America/New_York"
-- PST/PDT → "America/Los_Angeles"
-- IST → "Asia/Kolkata"
-- If no timezone mentioned, use user's default: {user_timezone or "UTC"}
+IMPORTANT: Detect timezone from the request. Look for:
+1. Timezone abbreviations:
+   - BST (Bangladesh Standard Time) → "Asia/Dhaka"
+   - EST/EDT/Eastern → "America/New_York"
+   - PST/PDT/Pacific → "America/Los_Angeles"
+   - CST/CDT/Central → "America/Chicago"
+   - IST → "Asia/Kolkata"
+   - GMT/UTC → "UTC"
+2. Country/region names:
+   - "Bangladesh time" → "Asia/Dhaka"
+   - "Eastern time" / "New York time" → "America/New_York"
+   - "Pacific time" / "LA time" / "California time" → "America/Los_Angeles"
+   - "India time" → "Asia/Kolkata"
+   - "UK time" / "London time" → "Europe/London"
+3. If NO timezone is mentioned at all, use user's default: "{user_timezone or 'UTC'}"
 
 Return the start date, end date, time, and timezone for the meeting.
 Examples:
@@ -316,15 +324,42 @@ async def check_calendars(state: AgentState) -> AgentState:
                     f"Could not check availability for: {', '.join(inaccessible_calendars)}. They need to log into the app to grant calendar access."
                 )
 
-            suggested_slots = [
-                {
-                    "id": f"slot_{i}",
-                    "start": slot.start.isoformat(),
-                    "end": slot.end.isoformat(),
-                    "duration_minutes": state["meeting_duration"],
-                }
-                for i, slot in enumerate(slots[:5])  # Top 5 slots
-            ]
+            # Convert slots from UTC to the user's timezone for display
+            display_timezone = parsed_timezone or user_timezone or "UTC"
+            try:
+                from zoneinfo import ZoneInfo
+                display_tz = ZoneInfo(display_timezone)
+                utc_tz = ZoneInfo("UTC")
+            except Exception:
+                display_tz = None
+
+            suggested_slots = []
+            for i, slot in enumerate(slots[:5]):  # Top 5 slots
+                if display_tz:
+                    # Convert UTC to user's timezone for display
+                    start_utc = slot.start.replace(tzinfo=utc_tz)
+                    end_utc = slot.end.replace(tzinfo=utc_tz)
+                    start_local = start_utc.astimezone(display_tz)
+                    end_local = end_utc.astimezone(display_tz)
+                    suggested_slots.append({
+                        "id": f"slot_{i}",
+                        "start": start_local.isoformat(),
+                        "end": end_local.isoformat(),
+                        "start_utc": slot.start.isoformat(),
+                        "end_utc": slot.end.isoformat(),
+                        "duration_minutes": state["meeting_duration"],
+                        "timezone": display_timezone,
+                    })
+                else:
+                    suggested_slots.append({
+                        "id": f"slot_{i}",
+                        "start": slot.start.isoformat(),
+                        "end": slot.end.isoformat(),
+                        "start_utc": slot.start.isoformat(),
+                        "end_utc": slot.end.isoformat(),
+                        "duration_minutes": state["meeting_duration"],
+                        "timezone": "UTC",
+                    })
 
             # Handle case when no slots are found
             if not suggested_slots:

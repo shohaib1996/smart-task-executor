@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import create_access_token, get_current_user
 from app.models.user import User
-from app.schemas.auth import GoogleAuthURL, UserResponse
+from app.schemas.auth import GoogleAuthURL, UserResponse, UpdateTimezoneRequest
 
 router = APIRouter()
 settings = get_settings()
@@ -134,3 +134,45 @@ async def get_current_user_info(
 async def logout(current_user: User = Depends(get_current_user)):
     """Logout user (client should discard token)"""
     return {"message": "Logged out successfully"}
+
+
+@router.put("/timezone", response_model=UserResponse)
+async def update_timezone(
+    request: UpdateTimezoneRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Update user's timezone preference.
+
+    The frontend should call this with the user's device timezone
+    (e.g., Intl.DateTimeFormat().resolvedOptions().timeZone in JavaScript)
+    after login or when the user changes their timezone preference.
+    """
+    from zoneinfo import ZoneInfo
+
+    # Validate timezone string
+    try:
+        ZoneInfo(request.timezone)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid timezone: {request.timezone}. Please use IANA timezone format (e.g., 'Asia/Dhaka', 'America/New_York')",
+        )
+
+    # Update user's timezone
+    result = await session.execute(
+        select(User).where(User.id == current_user.id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    user.timezone = request.timezone
+    await session.commit()
+    await session.refresh(user)
+
+    return UserResponse.model_validate(user)
