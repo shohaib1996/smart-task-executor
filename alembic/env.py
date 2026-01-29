@@ -1,8 +1,9 @@
 import asyncio
+import ssl
 from logging.config import fileConfig
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 from alembic import context
 
@@ -17,7 +18,9 @@ if config.config_file_name is not None:
 
 target_metadata = SQLModel.metadata
 
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Remove sslmode from URL (asyncpg doesn't accept it as query param)
+database_url = settings.DATABASE_URL.split("?")[0]
+config.set_main_option("sqlalchemy.url", database_url)
 
 
 def run_migrations_offline() -> None:
@@ -43,10 +46,15 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    # Create SSL context for Neon PostgreSQL
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    connectable = create_async_engine(
+        database_url,
         poolclass=pool.NullPool,
+        connect_args={"ssl": ssl_context},
     )
 
     async with connectable.connect() as connection:

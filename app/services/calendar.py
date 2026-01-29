@@ -343,12 +343,25 @@ class CalendarService:
         location: str = None,
         add_meet_link: bool = True,
         calendar_id: str = "primary",
+        timezone: str = "UTC",
     ) -> CalendarEvent:
-        """Create a new calendar event"""
+        """Create a new calendar event
+
+        Args:
+            summary: Event title
+            start: Start datetime (in UTC)
+            end: End datetime (in UTC)
+            attendees: List of attendee emails
+            description: Event description
+            location: Event location
+            add_meet_link: Whether to add Google Meet link
+            calendar_id: Calendar to create event in
+            timezone: IANA timezone for display (e.g., "Asia/Dhaka")
+        """
         event_body = {
             "summary": summary,
-            "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
+            "start": {"dateTime": start.isoformat(), "timeZone": timezone},
+            "end": {"dateTime": end.isoformat(), "timeZone": timezone},
         }
 
         if attendees:

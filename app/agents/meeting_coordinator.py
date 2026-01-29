@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     workflow_id: str
     user_id: str
     user_email: Optional[str]  # Organizer's email
+    user_timezone: Optional[str]  # User's timezone (e.g., "Asia/Dhaka")
     user_request: str
 
     # Extracted info
@@ -35,6 +36,7 @@ class AgentState(TypedDict):
     meeting_duration: Optional[int]  # minutes
     attendees: List[str]
     preferred_timeframe: Optional[str]
+    parsed_timezone: Optional[str]  # Timezone extracted from request (e.g., "BST" -> "Asia/Dhaka")
 
     # Calendar data
     user_events: List[dict]
@@ -64,21 +66,31 @@ llm = ChatOpenAI(
 )
 
 
-async def _parse_timeframe(preferred_timeframe: str | None) -> tuple[datetime, datetime, datetime | None]:
+async def _parse_timeframe(
+    preferred_timeframe: str | None,
+    user_timezone: str | None = None
+) -> tuple[datetime, datetime, datetime | None, str | None]:
     """Parse natural language timeframe into start and end datetime.
 
+    Args:
+        preferred_timeframe: Natural language timeframe (e.g., "next tuesday at 7am BST")
+        user_timezone: User's default timezone from profile (e.g., "Asia/Dhaka")
+
     Returns:
-        tuple: (search_start, search_end, preferred_time or None)
-        - search_start/end: Range to search for available slots
-        - preferred_time: Exact preferred datetime if user specified one (e.g., "2PM")
+        tuple: (search_start, search_end, preferred_time or None, timezone_str or None)
+        - search_start/end: Range to search for available slots (in UTC)
+        - preferred_time: Exact preferred datetime if user specified one (in UTC)
+        - timezone_str: IANA timezone string for the meeting (e.g., "Asia/Dhaka")
     """
+    from zoneinfo import ZoneInfo
+
     now = datetime.utcnow()
 
     if not preferred_timeframe:
         # Default: next 2 weeks
-        return now, now + timedelta(days=14), None
+        return now, now + timedelta(days=14), None, user_timezone
 
-    # Use LLM to parse natural language timeframe
+    # Use LLM to parse natural language timeframe WITH timezone detection
     today_str = now.strftime("%A, %B %d, %Y")
 
     # Calculate what "next friday" would be for reference
@@ -95,16 +107,24 @@ Parse this timeframe: "{preferred_timeframe}"
 For reference:
 - Today's date: {now.strftime("%Y-%m-%d")}
 - Next Friday: {next_friday_str}
+- User's default timezone: {user_timezone or "UTC"}
 
-Return the start date and end date for searching available meeting slots.
+IMPORTANT: Detect timezone from the request. Common abbreviations:
+- BST (Bangladesh Standard Time) → "Asia/Dhaka"
+- BST (British Summer Time) → "Europe/London" (only in summer months)
+- EST/EDT → "America/New_York"
+- PST/PDT → "America/Los_Angeles"
+- IST → "Asia/Kolkata"
+- If no timezone mentioned, use user's default: {user_timezone or "UTC"}
+
+Return the start date, end date, time, and timezone for the meeting.
 Examples:
-- "next friday" → {{"start_date": "{next_friday_str}", "end_date": "{next_friday_str}", "preferred_hour": null}}
-- "next friday at 2PM" → {{"start_date": "{next_friday_str}", "end_date": "{next_friday_str}", "preferred_hour": 14}}
-- "tomorrow at 3:30PM" → {{"start_date": "...", "end_date": "...", "preferred_hour": 15, "preferred_minute": 30}}
-- "tomorrow" → start tomorrow, end tomorrow, no preferred hour
+- "next friday at 7am BST" → {{"start_date": "{next_friday_str}", "end_date": "{next_friday_str}", "preferred_hour": 7, "preferred_minute": 0, "timezone": "Asia/Dhaka"}}
+- "tomorrow at 3:30PM EST" → {{"start_date": "...", "end_date": "...", "preferred_hour": 15, "preferred_minute": 30, "timezone": "America/New_York"}}
+- "next monday at 2PM" → {{"start_date": "...", "end_date": "...", "preferred_hour": 14, "preferred_minute": 0, "timezone": "{user_timezone or 'UTC'}"}}
 
 Respond ONLY with JSON (no markdown, no explanation):
-{{"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "preferred_hour": null or number, "preferred_minute": null or number}}
+{{"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "preferred_hour": null or number, "preferred_minute": null or number, "timezone": "IANA timezone string"}}
 """
 
     try:
@@ -121,24 +141,39 @@ Respond ONLY with JSON (no markdown, no explanation):
 
         start_date = datetime.strptime(parsed["start_date"], "%Y-%m-%d")
         end_date = datetime.strptime(parsed["end_date"], "%Y-%m-%d")
+        timezone_str = parsed.get("timezone") or user_timezone or "UTC"
 
         # Track preferred time if specified
         preferred_time = None
         if parsed.get("preferred_hour") is not None:
             preferred_hour = int(parsed["preferred_hour"])
             preferred_minute = int(parsed.get("preferred_minute") or 0)
-            preferred_time = start_date.replace(hour=preferred_hour, minute=preferred_minute)
-            # Also adjust search start to the preferred time
-            start_date = start_date.replace(hour=preferred_hour, minute=preferred_minute)
+
+            # Create time in the specified timezone, then convert to UTC
+            local_time = start_date.replace(hour=preferred_hour, minute=preferred_minute)
+
+            try:
+                # Convert local time to UTC
+                local_tz = ZoneInfo(timezone_str)
+                local_dt = local_time.replace(tzinfo=local_tz)
+                utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
+                preferred_time = utc_dt.replace(tzinfo=None)  # Store as naive UTC
+
+                # Also adjust search start
+                start_date = preferred_time
+            except Exception:
+                # If timezone conversion fails, treat as UTC
+                preferred_time = local_time
+                start_date = start_date.replace(hour=preferred_hour, minute=preferred_minute)
 
         # End date should cover the full day
         end_date = end_date.replace(hour=23, minute=59)
 
-        return start_date, end_date, preferred_time
+        return start_date, end_date, preferred_time, timezone_str
 
     except Exception:
         # Fallback to default
-        return now, now + timedelta(days=14), None
+        return now, now + timedelta(days=14), None, user_timezone
 
 
 async def parse_request(state: AgentState) -> AgentState:
@@ -211,8 +246,9 @@ async def check_calendars(state: AgentState) -> AgentState:
                 "current_step": "error",
             }
 
-        # Store user's email for later use (confirmation email)
+        # Store user's email and timezone for later use
         user_email = user.email
+        user_timezone = getattr(user, 'timezone', None) or "UTC"
 
         # Log progress
         await _log_progress(
@@ -225,8 +261,11 @@ async def check_calendars(state: AgentState) -> AgentState:
                 refresh_token=user.google_refresh_token,
             )
 
-            # Determine time range based on user's preferred timeframe
-            time_min, time_max, preferred_time = await _parse_timeframe(state.get("preferred_timeframe"))
+            # Determine time range based on user's preferred timeframe (with timezone support)
+            time_min, time_max, preferred_time, parsed_timezone = await _parse_timeframe(
+                state.get("preferred_timeframe"),
+                user_timezone
+            )
 
             # Get user's events
             events = await calendar.get_events(
@@ -314,6 +353,8 @@ async def check_calendars(state: AgentState) -> AgentState:
             return {
                 **state,
                 "user_email": user_email,
+                "user_timezone": user_timezone,
+                "parsed_timezone": parsed_timezone,
                 "user_events": user_events,
                 "suggested_slots": suggested_slots,
                 "inaccessible_calendars": inaccessible_calendars,
@@ -327,6 +368,7 @@ async def check_calendars(state: AgentState) -> AgentState:
             return {
                 **state,
                 "user_email": user_email,
+                "user_timezone": user_timezone,
                 "error": f"Calendar error: {str(e)}",
                 "current_step": "error",
             }
@@ -377,6 +419,9 @@ async def prepare_actions(state: AgentState) -> AgentState:
     if organizer_email and organizer_email not in all_attendees:
         all_attendees.append(organizer_email)
 
+    # Get timezone for the event (use parsed timezone from request, or user's default)
+    event_timezone = state.get("parsed_timezone") or state.get("user_timezone") or "UTC"
+
     # Only action needed: Create Calendar Event
     # Google Calendar automatically sends email invites to all attendees
     actions = [
@@ -391,6 +436,7 @@ async def prepare_actions(state: AgentState) -> AgentState:
                 "attendees": all_attendees,
                 "description": "Meeting scheduled via Smart Task Executor",
                 "add_meet_link": True,
+                "timezone": event_timezone,  # Use the parsed/user timezone
             },
             "requires_approval": True,
             "api_name": "Google Calendar",
@@ -559,11 +605,13 @@ async def run_meeting_coordinator(workflow_id: str, user_id: str):
             "workflow_id": workflow_id,
             "user_id": user_id,
             "user_email": None,  # Will be populated in check_calendars
+            "user_timezone": None,  # Will be populated in check_calendars
             "user_request": workflow.user_request,
             "meeting_title": None,
             "meeting_duration": None,
             "attendees": [],
             "preferred_timeframe": None,
+            "parsed_timezone": None,  # Will be populated from request parsing
             "user_events": [],
             "attendee_availability": {},
             "suggested_slots": [],

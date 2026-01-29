@@ -17,6 +17,9 @@ class User(SQLModel, table=True):
     google_refresh_token: Optional[str] = None
     google_token_expires_at: Optional[datetime] = None
 
+    # User preferences
+    timezone: Optional[str] = Field(default="UTC")  # e.g., "Asia/Dhaka", "America/New_York"
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

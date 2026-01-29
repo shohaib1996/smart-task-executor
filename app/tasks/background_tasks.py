@@ -177,6 +177,7 @@ async def _execute_single_action(action: Action, user) -> dict:
             attendees=payload.get("attendees", []),
             description=payload.get("description"),
             add_meet_link=payload.get("add_meet_link", True),
+            timezone=payload.get("timezone", "UTC"),
         )
         return {"event_id": event.id, "meet_link": event.meet_link}
 
